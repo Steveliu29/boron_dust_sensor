@@ -36,15 +36,13 @@
 */
 
 #include <Seeed_HM330X.h>
+#include <vector>
 
-HM330XErrorCode record_reset();
 HM330XErrorCode publish_daily_record();
-HM330XErrorCode parse_result(uint8_t* data);
-HM330XErrorCode parse_result_value(uint8_t* data);
 HM330XErrorCode print_result(const char* str, uint16_t value);
 void setup();
 void loop();
-#line 34 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
+#line 35 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
 #ifdef  ARDUINO_SAMD_VARIANT_COMPLIANCE
     #define SERIAL_OUTPUT SerialUSB
 #else
@@ -53,9 +51,9 @@ void loop();
 
 // #define SERIAL_OUTPUT_ENABLE
 // #define TIME_SYNC_ENABLE
-// #define SLEEP_ENABLE
+#define SLEEP_ENABLE
 
-#define SLEEP_TIME 15min
+#define SLEEP_TIME 30min
 #define ONE_DAY_MILLIS (24 * 60 * 60 * 1000)
 #define MAX_SAMPLE 48 
 unsigned long lastSync = millis();
@@ -65,15 +63,16 @@ uint8_t sample_counter = 0;
 HM330X sensor;
 uint8_t buf[30];
 
-typedef struct dust_record {
-    uint16_t sensor_no;
-    uint16_t time [MAX_SAMPLE];
-    uint16_t ae_value [MAX_SAMPLE][3];
-    // uint16_t spm_value [3];
+typedef struct data {
+    uint16_t day;
+    uint16_t hour;
+    uint16_t minute;
+    uint16_t ae_value [3];
+} Data;
 
-} Dust_record;
 
-Dust_record my_record;
+std::vector<Data> sensor_record;
+
 // Remember to push the collected value within 24hrs all at once
 
 const char* str[] = {"sensor num: ", "PM1.0 concentration(CF=1,Standard particulate matter,unit:ug/m3): ",
@@ -84,28 +83,43 @@ const char* str[] = {"sensor num: ", "PM1.0 concentration(CF=1,Standard particul
                      "PM10 concentration(Atmospheric environment,unit:ug/m3): ",
                     };
 
-HM330XErrorCode record_reset() {
-    int size = (sizeof(uint16_t));
-    memset(my_record.time, 0, MAX_SAMPLE * size);
-    memset(my_record.ae_value, 0, MAX_SAMPLE * size * 3);
+// HM330XErrorCode record_reset() {
+//     int size = (sizeof(uint16_t));
+//     memset(my_record.day, 0, MAX_SAMPLE * size);
+//     memset(my_record.hour, 0, MAX_SAMPLE * size);
+//     memset(my_record.minute, 0, MAX_SAMPLE * size);
+//     memset(my_record.ae_value, 0, MAX_SAMPLE * size * 3);
 
-    return NO_ERR;
-}
+//     return NO_ERR;
+// }
 
 HM330XErrorCode publish_daily_record() {
-    for (int i = 0; i < MAX_SAMPLE; i++){
-        String to_publish = (String) my_record.sensor_no;
-        to_publish.concat(",");
-        to_publish.concat((String)my_record.time[i]);
-        to_publish.concat(",");
-        to_publish.concat((String)my_record.ae_value[i][0]);
-        to_publish.concat(",");
-        to_publish.concat((String)my_record.ae_value[i][1]);
-        to_publish.concat(",");
-        to_publish.concat((String)my_record.ae_value[i][2]);
+    while(!sensor_record.empty()){
+        Data data_to_publish = sensor_record.front();
         
-        delay(1000);
-        Particle.publish(to_publish);
+        String to_publish = ((String)data_to_publish.day);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.hour);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.minute);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.ae_value[0]);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.ae_value[1]);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.ae_value[2]);
+        
+        delay(400);
+
+        // Check for connection
+        // if YES, transmitted everything in the buffer
+        // if NO, leave the current data in the buffer, send it next day
+        if (Particle.connected()){
+            Particle.publish(to_publish);
+            sensor_record.erase(sensor_record.begin());
+        } else {
+            break;
+        }
     }
 
     return NO_ERR;
@@ -113,20 +127,19 @@ HM330XErrorCode publish_daily_record() {
 
 
 /*parse buf with 29 uint8_t-data*/
-HM330XErrorCode parse_result(uint8_t* data) {
+HM330XErrorCode parse_result(uint8_t* data, Data& new_sample) {
     uint16_t value = 0;
     if (NULL == data) {
         return ERROR_PARAM;
     }
     
-    my_record.sensor_no = (uint16_t) data[2] << 8 | data[5];
+    // my_record.sensor_no = (uint16_t) data[2] << 8 | data[5];
 
-    for (int i = 2; i < 8; i++) {
+    for (int i = 5; i < 8; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
 
-        if (i >= 5){
-           my_record.ae_value[sample_counter][i - 5] = my_record.ae_value[sample_counter][i - 5] + value;
-        } 
+        new_sample.ae_value[i - 5] = new_sample.ae_value[i - 5] + value;
+         
         
     }
 
@@ -175,7 +188,6 @@ SYSTEM_MODE(AUTOMATIC);
 // SYSTEM_THREAD(ENABLED);
 
 void setup() {
-    record_reset();
 
 #ifdef SERIAL_OUTPUT_ENABLE
     SERIAL_OUTPUT.begin(115200);
@@ -199,6 +211,8 @@ void setup() {
 
 
 void loop() {  
+    
+    Data new_sample;
 
 #ifdef SERIAL_OUTPUT_ENABLE
     for (int i = 0; i < 5; i++){
@@ -226,19 +240,22 @@ void loop() {
 
 #else
 
+    
     for (int i = 0; i < 5; i++){
 		if (sensor.read_sensor_value(buf, 29)) {
-        	Particle.publish("Read Result Failed");
+            if (Particle.connected()){
+        	    Particle.publish("Read Result Failed");
+            }
     	}
-        parse_result(buf);
+        parse_result(buf, new_sample);
 		delay(1000);
     }
 
 	for (int i = 0; i < 3; i++){
-		my_record.ae_value[sample_counter][i] = my_record.ae_value[sample_counter][i] / 5;
+		new_sample.ae_value[i] = new_sample.ae_value[i] / 5;
     }
 
-    delay(5000);
+    // delay(5000);
 
 #endif
 
@@ -252,8 +269,11 @@ void loop() {
         lastSync = millis();
     }
 #endif
-    
-    my_record.time[sample_counter] = Time.minute();
+
+    new_sample.day = Time.day();
+    new_sample.hour = Time.hour();
+    new_sample.minute = Time.minute();
+    sensor_record.emplace_back(new_sample);
 
     sample_counter = sample_counter + 1;
 
@@ -261,7 +281,6 @@ void loop() {
 
         publish_daily_record();
         sample_counter = 0;
-        record_reset();
     }
 
 #ifdef SLEEP_ENABLE
@@ -271,15 +290,12 @@ void loop() {
           .duration(SLEEP_TIME);
     System.sleep(config);
 #else
-    delay(15000);
+    delay(SLEEP_TIME);
 #endif
 
-    while (!Particle.connected()){
-        delay(5000);
+    // Debug use: Battery health check
+    if (Particle.connected()){
+        Particle.publish(String(sample_counter)); 
+        Particle.publishVitals();
     }
-    // Particle.publish(String(sample_counter));
-    // Particle.connect();
-    // while (!Particle.connected()){
-    //     delay(5000);
-    // }
 }
