@@ -40,6 +40,7 @@
 
 HM330XErrorCode publish_daily_record();
 HM330XErrorCode print_result(const char* str, uint16_t value);
+void safeDelay(unsigned long delayMillis);
 void setup();
 void loop();
 #line 35 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
@@ -51,7 +52,7 @@ void loop();
 
 // #define SERIAL_OUTPUT_ENABLE
 // #define TIME_SYNC_ENABLE
-#define SLEEP_ENABLE
+// #define SLEEP_ENABLE
 
 #define SLEEP_TIME 30min
 #define ONE_DAY_MILLIS (24 * 60 * 60 * 1000)
@@ -59,15 +60,21 @@ void loop();
 unsigned long lastSync = millis();
 
 uint8_t sample_counter = 0;
+int DUST_SENSOR = D6;
 
 HM330X sensor;
 uint8_t buf[30];
 
+// before setup - enable feature
+STARTUP(System.enableFeature(FEATURE_RESET_INFO));
+// Enable logging as we ware looking at messages that will be off-line - need to connect to serial terminal
+SerialLogHandler logHandler(LOG_LEVEL_INFO);
+
 typedef struct data {
-    uint16_t day;
-    uint16_t hour;
-    uint16_t minute;
-    uint16_t ae_value [3];
+    uint16_t day = 0;
+    uint16_t hour = 0;
+    uint16_t minute = 0;
+    uint16_t ae_value [3] = {0,0,0};
 } Data;
 
 
@@ -109,7 +116,7 @@ HM330XErrorCode publish_daily_record() {
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.ae_value[2]);
         
-        delay(400);
+        delay(1000);
 
         // Check for connection
         // if YES, transmitted everything in the buffer
@@ -182,12 +189,32 @@ HM330XErrorCode print_result(const char* str, uint16_t value) {
 
 #endif
 
+void safeDelay(unsigned long delayMillis) { // Ensures Particle functions operate during long delays
+   unsigned long timeStamp = millis();
+   while (millis() - timeStamp < delayMillis) {
+      delay(10);
+      Particle.process();
+   }
+}
+
 
 /*30s*/
-SYSTEM_MODE(AUTOMATIC);
-// SYSTEM_THREAD(ENABLED);
+SYSTEM_MODE(SEMI_AUTOMATIC);
+SYSTEM_THREAD(ENABLED);
 
 void setup() {
+    if (System.resetReason() == RESET_REASON_PIN_RESET) {
+        Log.info("Restarted due to a pin reset");
+    } else if (System.resetReason() == RESET_REASON_USER) { // Check to see if we are starting from a pin reset or a reset in the sketch
+        Log.info("Restarted due to a user reset");
+    } else Log.info("System reset reason %i", System.resetReason());
+    
+    // Particle.connect();
+    // safeDelay(20000);
+    
+    pinMode(DUST_SENSOR, OUTPUT);
+    digitalWrite(DUST_SENSOR, HIGH);
+    safeDelay(10000);
 
 #ifdef SERIAL_OUTPUT_ENABLE
     SERIAL_OUTPUT.begin(115200);
@@ -200,10 +227,18 @@ void setup() {
 
 #else
     if (sensor.init()) {
-        Particle.publish("Init Failed");
-        while (1);
+        Log.info("Init Failed");
+        safeDelay(2000);
+        Particle.disconnect();
+        Cellular.off();
+        while (1){
+            Particle.process();
+        };
     } else {
-        Particle.publish("Init Success");
+        Log.info("Init Success");
+        safeDelay(2000);
+        Particle.disconnect();
+        Cellular.off();
     }
 #endif
 
@@ -213,40 +248,13 @@ void setup() {
 void loop() {  
     
     Data new_sample;
-
+    
 #ifdef SERIAL_OUTPUT_ENABLE
     for (int i = 0; i < 5; i++){
 		if (sensor.read_sensor_value(buf, 29)) {
         	SERIAL_OUTPUT.println("HM330X read result failed!!!");
     	}
         parse_result_value(buf);
-        parse_result(buf);
-		delay(1000);
-    }
-
-	for (int i = 0; i < 3; i++){
-		my_record.ae_value[sample_counter][i] = my_record.ae_value[sample_counter][i] / 5;
-    }
-
-    SERIAL_OUTPUT.println("");
-    delay(5000);
-
-	// Print result out to the serial line
-    print_result(str[0], my_record.sensor_no);
-	for (int i = 4; i < 7; i++) {
-		print_result(str[i], my_record.ae_value[sample_counter][i - 4]);
-	}
-    SERIAL_OUTPUT.println("");
-
-#else
-
-    
-    for (int i = 0; i < 5; i++){
-		if (sensor.read_sensor_value(buf, 29)) {
-            if (Particle.connected()){
-        	    Particle.publish("Read Result Failed");
-            }
-    	}
         parse_result(buf, new_sample);
 		delay(1000);
     }
@@ -255,7 +263,33 @@ void loop() {
 		new_sample.ae_value[i] = new_sample.ae_value[i] / 5;
     }
 
-    // delay(5000);
+    SERIAL_OUTPUT.println("");
+    delay(5000);
+
+	// Print result out to the serial line
+    
+	for (int i = 4; i < 7; i++) {
+		print_result(str[i], new_sample.ae_value[i - 4]);
+	}
+    SERIAL_OUTPUT.println("");
+
+#else
+
+    for (int i = 0; i < 5; i++){
+		if (sensor.read_sensor_value(buf, 29)) {
+            // if (Particle.connected()){
+        	//     Particle.publish("Read Result Failed");
+            // }
+    	}
+        parse_result(buf, new_sample);
+		safeDelay(1000);
+    }
+
+	for (int i = 0; i < 3; i++){
+		new_sample.ae_value[i] = new_sample.ae_value[i] / 5;
+    }
+
+    
 
 #endif
 
@@ -277,25 +311,36 @@ void loop() {
 
     sample_counter = sample_counter + 1;
 
-    if (sample_counter == MAX_SAMPLE){
-
-        publish_daily_record();
-        sample_counter = 0;
+    if (sample_counter == MAX_SAMPLE - 1){
+        Log.info("attemp to connect");
+        Particle.connect();
+        safeDelay(20000);
     }
 
+    if (sample_counter == MAX_SAMPLE){    
+        Log.info("ready to publish");        
+        publish_daily_record();
+        sample_counter = 0;
+        Particle.disconnect();
+        Cellular.off();
+        Log.info("Switch off network facility");
+    }
+
+    
 #ifdef SLEEP_ENABLE
     SystemSleepConfiguration config;
-    config.mode(SystemSleepMode::ULTRA_LOW_POWER)
-          // .network(NETWORK_INTERFACE_CELLULAR)
+    config.mode(SystemSleepMode::STOP)
+           //.network(NETWORK_INTERFACE_CELLULAR)
           .duration(SLEEP_TIME);
     System.sleep(config);
 #else
-    delay(SLEEP_TIME);
+    safeDelay(10000);
 #endif
-
+    
     // Debug use: Battery health check
-    if (Particle.connected()){
-        Particle.publish(String(sample_counter)); 
-        Particle.publishVitals();
-    }
+    // if (Particle.connected()){
+    //     Particle.publish(String(sample_counter)); 
+    //     Particle.publishVitals();
+    // }
+    Log.info("counter number is " + String(sample_counter));
 }
