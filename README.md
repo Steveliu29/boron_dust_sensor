@@ -1,8 +1,8 @@
-# Working_Dust_Sensor
+# Boron Dust Sensor
 
-A Particle project named Working_Dust_Sensor
+A Particle project that measures the pm concentration over the day, and send the data to Particle cloud every 24 hours.
 
-## Welcome to your project!
+## Breakdown of the project!
 
 Every new Particle project is composed of 3 important elements that you'll see have been created in your project directory for Working_Dust_Sensor.
 
