@@ -5,6 +5,7 @@
 #include "Particle.h"
 #line 1 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
 /*
+    This is the MIT License for the demo of HM3301 Dust Sensor.
     basic_demo.ino
     Example for Seeed PM2.5 Sensor(HM300)
 
@@ -38,29 +39,28 @@
 #include <Seeed_HM330X.h>
 #include <vector>
 
+// #define SERIAL_OUTPUT_ENABLE
 HM330XErrorCode publish_daily_record();
 HM330XErrorCode print_result(const char* str, uint16_t value);
 void safeDelay(unsigned long delayMillis);
 void setup();
 void loop();
-#line 35 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
-#ifdef  ARDUINO_SAMD_VARIANT_COMPLIANCE
-    #define SERIAL_OUTPUT SerialUSB
-#else
-    #define SERIAL_OUTPUT Serial
-#endif
+#line 37 "c:/Users/10336/OneDrive/Particle/Working_Dust_Sensor/src/Working_Dust_Sensor.ino"
+#define TIME_SYNC_ENABLE
+#define SLEEP_ENABLE
 
-// #define SERIAL_OUTPUT_ENABLE
-// #define TIME_SYNC_ENABLE
-// #define SLEEP_ENABLE
-
-#define SLEEP_TIME 30min
+// SLEEP TIME = 30min * 60sec/min * 1000ms/sec 
+#define SLEEP_TIME 30 * 60 * 1000
 #define ONE_DAY_MILLIS (24 * 60 * 60 * 1000)
-#define MAX_SAMPLE 48 
-unsigned long lastSync = millis();
+#define MAX_SAMPLE 48
+// This is the TIME_ZONE for EST, change it to corresponding time zone when shipped to Kenya 
+#define TIME_ZONE -5 
+// unsigned long lastSync = millis();
 
-uint8_t sample_counter = 0;
-int DUST_SENSOR = D6;
+uint16_t sample_counter = 0;
+uint16_t sample_sent = 0;
+system_tick_t sleep_time; 
+const int DUST_SENSOR = D6;
 
 HM330X sensor;
 uint8_t buf[30];
@@ -80,30 +80,18 @@ typedef struct data {
 
 std::vector<Data> sensor_record;
 
-// Remember to push the collected value within 24hrs all at once
-
-const char* str[] = {"sensor num: ", "PM1.0 concentration(CF=1,Standard particulate matter,unit:ug/m3): ",
-                     "PM2.5 concentration(CF=1,Standard particulate matter,unit:ug/m3): ",
-                     "PM10 concentration(CF=1,Standard particulate matter,unit:ug/m3): ",
+const char* str[] = {
                      "PM1.0 concentration(Atmospheric environment,unit:ug/m3): ",
                      "PM2.5 concentration(Atmospheric environment,unit:ug/m3): ",
                      "PM10 concentration(Atmospheric environment,unit:ug/m3): ",
                     };
 
-// HM330XErrorCode record_reset() {
-//     int size = (sizeof(uint16_t));
-//     memset(my_record.day, 0, MAX_SAMPLE * size);
-//     memset(my_record.hour, 0, MAX_SAMPLE * size);
-//     memset(my_record.minute, 0, MAX_SAMPLE * size);
-//     memset(my_record.ae_value, 0, MAX_SAMPLE * size * 3);
-
-//     return NO_ERR;
-// }
 
 HM330XErrorCode publish_daily_record() {
     while(!sensor_record.empty()){
         Data data_to_publish = sensor_record.front();
         
+        // Some String manipulation
         String to_publish = ((String)data_to_publish.day);
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.hour);
@@ -116,7 +104,7 @@ HM330XErrorCode publish_daily_record() {
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.ae_value[2]);
         
-        delay(1000);
+        safeDelay(1000);
 
         // Check for connection
         // if YES, transmitted everything in the buffer
@@ -124,6 +112,7 @@ HM330XErrorCode publish_daily_record() {
         if (Particle.connected()){
             Particle.publish(to_publish);
             sensor_record.erase(sensor_record.begin());
+            sample_sent = sample_sent + 1;
         } else {
             break;
         }
@@ -146,48 +135,22 @@ HM330XErrorCode parse_result(uint8_t* data, Data& new_sample) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
 
         new_sample.ae_value[i - 5] = new_sample.ae_value[i - 5] + value;
-         
-        
+               
     }
 
     return NO_ERR;
 }
 
-#ifdef SERIAL_OUTPUT_ENABLE
-
-HM330XErrorCode parse_result_value(uint8_t* data) {
-    if (NULL == data) {
-        return ERROR_PARAM;
-    }
-    for (int i = 0; i < 28; i++) {
-        SERIAL_OUTPUT.print(data[i], HEX);
-        SERIAL_OUTPUT.print("  ");
-        if ((0 == (i) % 5) || (0 == i)) {
-            SERIAL_OUTPUT.println("");
-        }
-    }
-    uint8_t sum = 0;
-    for (int i = 0; i < 28; i++) {
-        sum += data[i];
-    }
-    if (sum != data[28]) {
-        SERIAL_OUTPUT.println("wrong checkSum!!!!");
-    }
-    SERIAL_OUTPUT.println("");
-    return NO_ERR;
-}
 
 HM330XErrorCode print_result(const char* str, uint16_t value) {
     if (NULL == str) {
         return ERROR_PARAM;
     }
-    SERIAL_OUTPUT.print(str);
-    SERIAL_OUTPUT.println(value);
+    Log.info(str + String(value));
 
     return NO_ERR;
 }
 
-#endif
 
 void safeDelay(unsigned long delayMillis) { // Ensures Particle functions operate during long delays
    unsigned long timeStamp = millis();
@@ -197,50 +160,54 @@ void safeDelay(unsigned long delayMillis) { // Ensures Particle functions operat
    }
 }
 
-
-/*30s*/
 SYSTEM_MODE(SEMI_AUTOMATIC);
 SYSTEM_THREAD(ENABLED);
 
 void setup() {
+
+    // Synchronize the time during setup
+    Particle.connect();
+    if (waitFor(Particle.connected, 180000)){
+        Particle.syncTime();
+        waitUntil(Particle.syncTimeDone);
+    } else {
+        // No Cellular found, sleep and reset
+        SystemSleepConfiguration config;
+        config.mode(SystemSleepMode::ULTRA_LOW_POWER)
+              .duration(30min);
+        System.sleep(config);
+
+        System.reset();
+    }
+    
+    // pinMode(DUST_SENSOR, OUTPUT);
+    // digitalWrite(DUST_SENSOR, HIGH);
+    
+    // safeDelay(10000);
+
+    // DEBUG USE: Log the previous reset reason
     if (System.resetReason() == RESET_REASON_PIN_RESET) {
         Log.info("Restarted due to a pin reset");
     } else if (System.resetReason() == RESET_REASON_USER) { // Check to see if we are starting from a pin reset or a reset in the sketch
         Log.info("Restarted due to a user reset");
     } else Log.info("System reset reason %i", System.resetReason());
-    
-    // Particle.connect();
-    // safeDelay(20000);
-    
-    pinMode(DUST_SENSOR, OUTPUT);
-    digitalWrite(DUST_SENSOR, HIGH);
-    safeDelay(10000);
 
-#ifdef SERIAL_OUTPUT_ENABLE
-    SERIAL_OUTPUT.begin(115200);
-    delay(100);
-    SERIAL_OUTPUT.println("Serial start");
-    if (sensor.init()) {
-        SERIAL_OUTPUT.println("HM330X init failed!!!");
-        while (1);
-    }
+    Time.zone(TIME_ZONE); // Adjust for the time zone
 
-#else
     if (sensor.init()) {
         Log.info("Init Failed");
-        safeDelay(2000);
         Particle.disconnect();
         Cellular.off();
+        // Trap if init failed
+        // Init Failure usually caused by bad physical connection to the HM3301 dust sensor
         while (1){
-            Particle.process();
+            Particle.process(); 
         };
     } else {
         Log.info("Init Success");
-        safeDelay(2000);
         Particle.disconnect();
         Cellular.off();
     }
-#endif
 
 }
 
@@ -248,99 +215,130 @@ void setup() {
 void loop() {  
     
     Data new_sample;
-    
-#ifdef SERIAL_OUTPUT_ENABLE
+
+    // Take 5 samples with 1s interval 
+    Log.info("Taking samples");
     for (int i = 0; i < 5; i++){
 		if (sensor.read_sensor_value(buf, 29)) {
-        	SERIAL_OUTPUT.println("HM330X read result failed!!!");
-    	}
-        parse_result_value(buf);
-        parse_result(buf, new_sample);
-		delay(1000);
-    }
-
-	for (int i = 0; i < 3; i++){
-		new_sample.ae_value[i] = new_sample.ae_value[i] / 5;
-    }
-
-    SERIAL_OUTPUT.println("");
-    delay(5000);
-
-	// Print result out to the serial line
-    
-	for (int i = 4; i < 7; i++) {
-		print_result(str[i], new_sample.ae_value[i - 4]);
-	}
-    SERIAL_OUTPUT.println("");
-
-#else
-
-    for (int i = 0; i < 5; i++){
-		if (sensor.read_sensor_value(buf, 29)) {
-            // if (Particle.connected()){
-        	//     Particle.publish("Read Result Failed");
-            // }
+        	Log.info("Read Result Failed");
     	}
         parse_result(buf, new_sample);
 		safeDelay(1000);
     }
 
+    // Average 5 samples
 	for (int i = 0; i < 3; i++){
 		new_sample.ae_value[i] = new_sample.ae_value[i] / 5;
     }
 
+    // Record the time
+    new_sample.day = Time.day();
+    new_sample.hour = Time.hour();
+    new_sample.minute = Time.minute();
     
+    // Add it to the sensor record and increment the sampler counter
+    sensor_record.emplace_back(new_sample);
+    sample_counter = sample_counter + 1;
 
-#endif
+    // Sleep time = 30min - 5s sample taking time
+    sleep_time = SLEEP_TIME - 5000; // 1800000ms = 1800s = 30min
+
+    // For the second last sample taken, open up the connection with cloud
+    if (sample_counter == MAX_SAMPLE - 1){
+        Log.info("Attemp to connect");
+        Particle.connect();
+
+        int i = 0;
+        for (; i < 30; i++){
+            Particle.process();
+            safeDelay(2000);
+            if (Particle.connected()){
+                Log.info("Connected to the Cloud");
+
+                // Inform the cloud about the availability of OTA
+                Particle.publish("HELLO ICON LAB"); 
+                safeDelay(2000);
+                sleep_time = sleep_time - 2000;
+                break;
+            }
+        }
+
+        if (i == 30){
+            Log.info("Fail to connect to the cloud, abort.");
+            Particle.disconnect();
+            Cellular.off();
+        }
+
+        sleep_time = sleep_time - (i+1)*2000; // offset the sleep time
 
 #ifdef TIME_SYNC_ENABLE
     // Code taken from Particle's tutorial
     // https://docs.particle.io/cards/firmware/cloud-functions/particle-synctime/
     //
-    if (millis() - lastSync > ONE_DAY_MILLIS) {
+    if (Particle.connected()) {
         // Request time synchronization from the Particle Device Cloud
         Particle.syncTime();
-        lastSync = millis();
+        safeDelay(2000);
+        sleep_time = sleep_time - 2000;
     }
+    
 #endif
 
-    new_sample.day = Time.day();
-    new_sample.hour = Time.hour();
-    new_sample.minute = Time.minute();
-    sensor_record.emplace_back(new_sample);
-
-    sample_counter = sample_counter + 1;
-
-    if (sample_counter == MAX_SAMPLE - 1){
-        Log.info("attemp to connect");
-        Particle.connect();
-        safeDelay(20000);
     }
 
-    if (sample_counter == MAX_SAMPLE){    
-        Log.info("ready to publish");        
+    // Publish the record to the cloud every 48 samples (48 samples * 30 min/sample = 24 hr)
+    // Reset all the counters
+    else if (sample_counter == MAX_SAMPLE){    
+        Log.info("Ready to publish");
+        //Particle.publish("Total Sample: " + String(sample_counter));      
         publish_daily_record();
         sample_counter = 0;
-        Particle.disconnect();
-        Cellular.off();
+        safeDelay(2000); // Give the device some time to process all the Particle.publish()
+        if (Particle.connected()){
+            Particle.disconnect();
+            Cellular.off();
+        }
         Log.info("Switch off network facility");
+        sleep_time = sleep_time - 2000 - sample_sent * 1000; // offset the sleep time
+        sample_sent = 0;
     }
 
-    
-#ifdef SLEEP_ENABLE
-    SystemSleepConfiguration config;
-    config.mode(SystemSleepMode::STOP)
-           //.network(NETWORK_INTERFACE_CELLULAR)
-          .duration(SLEEP_TIME);
-    System.sleep(config);
-#else
-    safeDelay(10000);
-#endif
-    
-    // Debug use: Battery health check
-    // if (Particle.connected()){
-    //     Particle.publish(String(sample_counter)); 
-    //     Particle.publishVitals();
+    // Log.info("Turning off the sensor");
+    // Wire.end();
+    // digitalWrite(DUST_SENSOR, LOW);
+
+    // if (Particle.connected())
+    // {
+    //     Particle.publish("Start Sleeping");
     // }
-    Log.info("counter number is " + String(sample_counter));
+
+    Log.info("Start Sleeping");
+#ifdef SLEEP_ENABLE
+    // Last cycle will have network enabled for potential OTA
+    if (sample_counter == MAX_SAMPLE - 1){
+        SystemSleepConfiguration network_config;
+        network_config.mode(SystemSleepMode::STOP)
+              .network(NETWORK_INTERFACE_CELLULAR)
+              .duration(sleep_time);
+        System.sleep(network_config);
+    } else {
+        SystemSleepConfiguration regular_config;
+        regular_config.mode(SystemSleepMode::STOP)
+              .duration(sleep_time);
+        System.sleep(regular_config);
+    }
+#else
+    safeDelay(sleep_time);
+#endif
+    // if (Particle.connected())
+    // {
+    //     Particle.publish("Waked Up from Sleep");
+    // }
+    // Log.info("Turning on the sensor");
+    // digitalWrite(DUST_SENSOR, HIGH);
+    // Log.info("Waiting for sensor starting up...");
+    // Wire.begin();
+    // safeDelay(30000);
+
+    Log.info("Counter number is " + String(sample_counter));
 }
