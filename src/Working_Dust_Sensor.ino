@@ -1,4 +1,5 @@
 /*
+    This is the MIT License for the demo of HM3301 Dust Sensor.
     basic_demo.ino
     Example for Seeed PM2.5 Sensor(HM300)
 
@@ -33,16 +34,16 @@
 #include <vector>
 
 // #define SERIAL_OUTPUT_ENABLE
-// #define TIME_SYNC_ENABLE
+#define TIME_SYNC_ENABLE
 #define SLEEP_ENABLE
 
-// SLEEP TIME = min * 60sec/min * 1000ms/sec 
-#define SLEEP_TIME 2 * 60 * 1000
+// SLEEP TIME = 30min * 60sec/min * 1000ms/sec 
+#define SLEEP_TIME 30 * 60 * 1000
 #define ONE_DAY_MILLIS (24 * 60 * 60 * 1000)
-#define MAX_SAMPLE 4
+#define MAX_SAMPLE 48
 // This is the TIME_ZONE for EST, change it to corresponding time zone when shipped to Kenya 
 #define TIME_ZONE -5 
-unsigned long lastSync = millis();
+// unsigned long lastSync = millis();
 
 uint16_t sample_counter = 0;
 uint16_t sample_sent = 0;
@@ -151,6 +152,21 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 SYSTEM_THREAD(ENABLED);
 
 void setup() {
+
+    // Synchronize the time during setup
+    Particle.connect();
+    if (waitFor(Particle.connected, 180000)){
+        Particle.syncTime();
+        waitUntil(Particle.syncTimeDone);
+    } else {
+        // No Cellular found, sleep and reset
+        SystemSleepConfiguration config;
+        config.mode(SystemSleepMode::ULTRA_LOW_POWER)
+              .duration(30min);
+        System.sleep(config);
+
+        System.reset();
+    }
     
     // pinMode(DUST_SENSOR, OUTPUT);
     // digitalWrite(DUST_SENSOR, HIGH);
@@ -170,8 +186,10 @@ void setup() {
         Log.info("Init Failed");
         Particle.disconnect();
         Cellular.off();
+        // Trap if init failed
+        // Init Failure usually caused by bad physical connection to the HM3301 dust sensor
         while (1){
-            Particle.process();
+            Particle.process(); 
         };
     } else {
         Log.info("Init Success");
@@ -224,7 +242,9 @@ void loop() {
             safeDelay(2000);
             if (Particle.connected()){
                 Log.info("Connected to the Cloud");
-                Particle.publish("HELLO ICON LAB");
+
+                // Inform the cloud about the availability of OTA
+                Particle.publish("HELLO ICON LAB"); 
                 safeDelay(2000);
                 sleep_time = sleep_time - 2000;
                 break;
@@ -243,10 +263,11 @@ void loop() {
     // Code taken from Particle's tutorial
     // https://docs.particle.io/cards/firmware/cloud-functions/particle-synctime/
     //
-    if (Particle.connected() && (millis() - lastSync > ONE_DAY_MILLIS)) {
+    if (Particle.connected()) {
         // Request time synchronization from the Particle Device Cloud
         Particle.syncTime();
-        lastSync = millis();
+        safeDelay(2000);
+        sleep_time = sleep_time - 2000;
     }
     
 #endif
@@ -256,15 +277,17 @@ void loop() {
     // Publish the record to the cloud every 48 samples (48 samples * 30 min/sample = 24 hr)
     // Reset all the counters
     else if (sample_counter == MAX_SAMPLE){    
-        Log.info("Ready to publish");        
+        Log.info("Ready to publish");
+        //Particle.publish("Total Sample: " + String(sample_counter));      
         publish_daily_record();
         sample_counter = 0;
+        safeDelay(2000); // Give the device some time to process all the Particle.publish()
         if (Particle.connected()){
             Particle.disconnect();
             Cellular.off();
         }
         Log.info("Switch off network facility");
-        sleep_time = sleep_time - sample_sent * 1000; // offset the sleep time
+        sleep_time = sleep_time - 2000 - sample_sent * 1000; // offset the sleep time
         sample_sent = 0;
     }
 
