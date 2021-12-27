@@ -297,6 +297,7 @@ void loop() {
         if (Particle.connected()){
             Particle.disconnect();
             Cellular.off();
+            waitFor(Cellular.isOff, 60000);
         }
         Log.info("Switch off network facility");
         sleep_time = sleep_time - 2000 - sample_sent * 1000; // offset the sleep time
