@@ -80,7 +80,8 @@ HM330XErrorCode publish_daily_record() {
         Data data_to_publish = sensor_record.front();
         
         // Some String manipulation
-        String to_publish = ((String)data_to_publish.day);
+        String to_publish = "[";
+        to_publish.concat((String)data_to_publish.day);
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.hour);
         to_publish.concat(",");
@@ -91,6 +92,7 @@ HM330XErrorCode publish_daily_record() {
         to_publish.concat((String)data_to_publish.ae_value[1]);
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.ae_value[2]);
+        to_publish.concat("]");
         
         safeDelay(1000);
 
@@ -98,7 +100,7 @@ HM330XErrorCode publish_daily_record() {
         // if YES, transmitted everything in the buffer
         // if NO, leave the current data in the buffer, send it next day
         if (Particle.connected()){
-            Particle.publish(to_publish);
+            Particle.publish("Dust_Reading", to_publish);
             sensor_record.erase(sensor_record.begin());
             sample_sent = sample_sent + 1;
         } else {
@@ -237,7 +239,7 @@ void loop() {
         Particle.connect();
 
         int i = 0;
-        for (; i < 30; i++){
+        for (; i < 90; i++){
             Particle.process();
             safeDelay(2000);
             if (Particle.connected()){
@@ -251,10 +253,11 @@ void loop() {
             }
         }
 
-        if (i == 30){
+        if (i == 90){
             Log.info("Fail to connect to the cloud, abort.");
             Particle.disconnect();
             Cellular.off();
+            waitFor(Cellular.isOff, 60000);
         }
 
         sleep_time = sleep_time - (i+1)*2000; // offset the sleep time
