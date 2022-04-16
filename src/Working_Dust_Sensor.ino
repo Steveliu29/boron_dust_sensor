@@ -59,6 +59,8 @@ STARTUP(System.enableFeature(FEATURE_RESET_INFO));
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 
 typedef struct data {
+    uint16_t year = 0;
+    uint16_t month = 0;
     uint16_t day = 0;
     uint16_t hour = 0;
     uint16_t minute = 0;
@@ -81,6 +83,10 @@ HM330XErrorCode publish_daily_record() {
         
         // Some String manipulation
         String to_publish = "[";
+        to_publish.concat((String)data_to_publish.year);
+        to_publish.concat(",");
+        to_publish.concat((String)data_to_publish.month);
+        to_publish.concat(",");
         to_publish.concat((String)data_to_publish.day);
         to_publish.concat(",");
         to_publish.concat((String)data_to_publish.hour);
@@ -222,6 +228,8 @@ void loop() {
     }
 
     // Record the time
+    new_sample.year = Time.year();
+    new_sample.month = Time.month();
     new_sample.day = Time.day();
     new_sample.hour = Time.hour();
     new_sample.minute = Time.minute();
